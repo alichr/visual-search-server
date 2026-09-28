@@ -1,0 +1,11 @@
+# Optional mirror of the GitHub Actions pipeline
+image: python:3.11-slim
+
+stages:
+  - lint
+
+lint:
+  stage: lint
+  script:
+    - pip install ruff==0.16.9
+    - ruff check .

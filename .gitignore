@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Model weights and datasets - never commit
+models/
+data/
+*.onnx

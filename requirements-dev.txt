@@ -1,0 +1,7 @@
+-r requirements.txt
+torch==2.14.0
+transformers==5.17.0
+onnx==1.23.0
+pytest==9.1.1
+httpx==0.28.1
+ruff==0.16.9
