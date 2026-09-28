@@ -1,1 +1,78 @@
-# Kubernetes manifests (optional)
+# CLIP-Serve on Kubernetes: 2 replicas behind a ClusterIP Service. Tested on kind (see README).
+#
+# Honest limitation: the image index is in-memory PER REPLICA. An image POSTed to /index lands on
+# one pod only, so /search results depend on which pod answers, and a restart empties the index.
+# A real deployment would keep embeddings in a shared vector store (e.g. pgvector, Qdrant, Milvus)
+# and make the pods stateless.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clip-serve
+  labels: {app: clip-serve}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: clip-serve}
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}  # never drop below 2 ready pods
+  template:
+    metadata:
+      labels: {app: clip-serve}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: clip-serve
+          # kind: `kind load docker-image clip-serve:latest`; a registry would use
+          # ghcr.io/alichr/visual-search-server:v0.1.0 with imagePullPolicy: IfNotPresent
+          image: clip-serve:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8000}
+          env:
+            - {name: PRECISION, value: int8}
+            - {name: ORT_THREADS, value: "2"}  # = CPU limit: one ORT thread per core we may use
+            - {name: MAX_BATCH, value: "16"}
+            - {name: MAX_WAIT_MS, value: "10"}
+          resources:
+            requests: {cpu: "1", memory: 512Mi}  # measured: ~310 MiB idle, ~450 MiB under load
+            limits: {cpu: "2", memory: 1Gi}
+          livenessProbe:  # restart only if the process is wedged
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:  # route traffic only after models load and warm-up completes
+            httpGet: {path: /readyz, port: http}
+            initialDelaySeconds: 5  # model load + warm-up takes ~2 s locally
+            periodSeconds: 5
+            failureThreshold: 3
+          lifecycle:  # keep serving while endpoints drop this pod, so rollouts lose no requests
+            preStop: {sleep: {seconds: 5}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}  # uploads spool here; the root filesystem is read-only
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clip-serve
+  labels: {app: clip-serve}
+spec:
+  type: ClusterIP
+  selector: {app: clip-serve}
+  ports:
+    - {name: http, port: 80, targetPort: http}
