@@ -38,17 +38,31 @@ def main(out: str) -> None:
     ids, mask = (torch.tensor([getattr(e, k) for e in enc]) for k in ("ids", "attention_mask"))
     clip = CLIPModel.from_pretrained(MODEL_ID).eval()
     torch.manual_seed(0)
-    for kind, feeds in [("image", {"pixel_values": torch.randn(2, 3, 224, 224)}),
-                        ("text", {"input_ids": ids, "attention_mask": mask})]:
+    for kind, feeds in [
+        ("image", {"pixel_values": torch.randn(2, 3, 224, 224)}),
+        ("text", {"input_ids": ids, "attention_mask": mask}),
+    ]:
         path, m, args = f"{out}/{kind}", Encoder(clip, kind).eval(), tuple(feeds.values())
-        torch.onnx.export(m, args, f"{path}_fp32.onnx", dynamo=False, opset_version=17,
-                          input_names=list(feeds), output_names=["emb"],
-                          dynamic_axes={k: {0: "batch"} for k in [*feeds, "emb"]})
+        torch.onnx.export(
+            m,
+            args,
+            f"{path}_fp32.onnx",
+            dynamo=False,
+            opset_version=17,
+            input_names=list(feeds),
+            output_names=["emb"],
+            dynamic_axes={k: {0: "batch"} for k in [*feeds, "emb"]},
+        )
         # text MLP fc2 outputs have outliers that Linux/aarch64 INT8 kernels mishandle: keep FP32
         nodes = onnx.load(f"{path}_fp32.onnx").graph.node
         keep = [n.name for n in nodes if kind == "text" and "fc2" in n.name]
-        quantize_dynamic(f"{path}_fp32.onnx", f"{path}_int8.onnx", per_channel=True,
-                         weight_type=QuantType.QInt8, nodes_to_exclude=keep)
+        quantize_dynamic(
+            f"{path}_fp32.onnx",
+            f"{path}_int8.onnx",
+            per_channel=True,
+            weight_type=QuantType.QInt8,
+            nodes_to_exclude=keep,
+        )
         with torch.no_grad():
             ref = m(*args).numpy()
         np_feeds = {k: v.numpy() for k, v in feeds.items()}

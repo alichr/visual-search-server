@@ -3,11 +3,20 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,3 +24,75 @@ jobs:
           python-version: "3.11"
       - run: pip install ruff==0.16.9
       - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Cache Hugging Face download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-clip-vit-base-patch32-v1
+      - name: Install (CPU-only torch first, so pip never pulls the CUDA build)
+        run: |
+          pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-dev.txt
+      - name: Export ONNX models (prints FP32/INT8 parity and sizes)
+        run: python export.py --out models
+      - name: Test against the INT8 models
+        run: pytest -q
+        env:
+          PRECISION: int8
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (layers cached in the GitHub Actions cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: clip-serve:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Image size
+        run: docker images clip-serve:ci
+      - name: Run container and wait for /readyz
+        run: |
+          docker run -d --name clip -p 8000:8000 clip-serve:ci
+          for i in $(seq 1 60); do
+            curl -fs localhost:8000/readyz && exit 0
+            sleep 1
+          done
+          docker logs clip
+          exit 1
+      - name: End-to-end /classify on a generated solid-red image
+        run: |
+          python3 -c "import sys; sys.stdout.buffer.write(b'P6 64 64 255\n' + b'\xff\x00\x00' * 4096)" > red.ppm
+          curl -fs -F "file=@red.ppm" -F "labels=red, blue" localhost:8000/classify | tee result.json
+          python3 -c "import json; r = json.load(open('result.json')); assert r['red'] > r['blue'], r"
+      - name: Container logs
+        if: always()
+        run: docker logs clip || true
+      - name: Push to GitHub Container Registry (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMAGE=ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]'):${{ github.ref_name }}
+          docker tag clip-serve:ci "$IMAGE"
+          docker push "$IMAGE"
