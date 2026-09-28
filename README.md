@@ -18,11 +18,10 @@ ordinary laptop.**
 [API](#-api-reference) · [How it works](#-how-it-works) · [Results](#-results) ·
 [Troubleshooting](#-troubleshooting)
 
-<img src="docs/swagger_search.png" alt="Searching 20 photos for 'a person on a bicycle' in the built-in API page" width="760">
+<img src="docs/hero.png" alt="How it works: add photos, search them with a sentence, or ask what's in a photo. Real results shown." width="900">
 
-<sub>Searching 20 COCO photos for <i>"a person on a bicycle"</i> from the built-in <code>/docs</code>
-page. Three of the top four results are cyclists. The third is a small figure riding a donkey, seen
-from behind.</sub>
+<sub>Real output from this service on 20 COCO photos: every result and percentage above came from the
+running service.</sub>
 
 </div>
 
@@ -90,7 +89,9 @@ docker compose up --build
 
 ### Step 3: try it
 
-Open **http://localhost:8000/docs**. Every endpoint has a **Try it out** button there.
+Open **http://localhost:8000/docs**. Every endpoint has a **Try it out** button there:
+
+<p align="center"><img src="docs/swagger_search.png" alt="The /docs page running a search for 'a person on a bicycle'" width="620"></p>
 
 Or, from a second terminal, download two sample photos and try the three main calls:
 
@@ -475,6 +476,8 @@ The offline tooling, `export.py` and `bench.py`, adds 263 lines, for 462 in tota
 
   </details>
 - **Evaluation data:** [Imagenette](https://github.com/fastai/imagenette) by fast.ai, a 10-class
-  subset of ImageNet. It's downloaded for benchmarking and not redistributed. The demo photos are
-  from [COCO](https://cocodataset.org/) val2017, fetched at run time and not committed.
+  subset of ImageNet. It's downloaded for benchmarking and not redistributed.
+- **Demo photos:** from [COCO](https://cocodataset.org/) val2017 (Flickr images under their
+  respective Creative Commons licences). Small thumbnails appear in `docs/hero.png`. The full photos
+  are fetched at run time and not committed.
 - **Licence:** this repository is released under the [Apache License 2.0](LICENSE).
