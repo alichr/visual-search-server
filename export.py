@@ -53,14 +53,15 @@ def main(out: str) -> None:
             output_names=["emb"],
             dynamic_axes={k: {0: "batch"} for k in [*feeds, "emb"]},
         )
-        # text MLP fc2 outputs have outliers that Linux/aarch64 INT8 kernels mishandle: keep FP32
+        # UInt8 weights: Int8 (u8s8) saturates on x86 AVX2 without VNNI (image cosine fell to 0.33).
+        # Text MLP fc2 activations have outliers no INT8 variant handles well on Linux: keep FP32.
         nodes = onnx.load(f"{path}_fp32.onnx").graph.node
         keep = [n.name for n in nodes if kind == "text" and "fc2" in n.name]
         quantize_dynamic(
             f"{path}_fp32.onnx",
             f"{path}_int8.onnx",
             per_channel=True,
-            weight_type=QuantType.QInt8,
+            weight_type=QuantType.QUInt8,
             nodes_to_exclude=keep,
         )
         with torch.no_grad():
@@ -71,6 +72,8 @@ def main(out: str) -> None:
             cos = (ref * emb).sum(1) / (np.linalg.norm(ref, axis=1) * np.linalg.norm(emb, axis=1))
             mb = os.path.getsize(f"{path}_{p}.onnx") / 1e6
             print(f"{kind} {p}: cosine vs PyTorch = {cos.min():.5f}, {mb:.1f} MB", flush=True)
+            if cos.min() < (0.999 if p == "fp32" else 0.97):  # fail CI instead of shipping bad INT8
+                sys.exit(f"parity check failed for {kind} {p}")
 
 
 if __name__ == "__main__":
