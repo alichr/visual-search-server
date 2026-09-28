@@ -7,17 +7,14 @@ import os
 import numpy as np
 from prometheus_client import Gauge, Histogram
 
-BATCH_SIZE = Histogram("batch_size", "Items per forward pass", ["batcher"],
-                       buckets=[1, 2, 4, 8, 16, 32, 64])
+MAX_BATCH, MAX_WAIT_MS = int(os.getenv("MAX_BATCH", "16")), float(os.getenv("MAX_WAIT_MS", "10"))
+BATCH_SIZE = Histogram("batch_size", "Items per forward pass", ["batcher"], buckets=(1, 4, 8, 16))
 QUEUE_DEPTH = Gauge("queue_depth", "Requests waiting for a batch", ["batcher"])
 
 
 class Batcher:
-    def __init__(self, fn, name: str = "image", max_batch: int | None = None,
-                 max_wait_ms: float | None = None):
-        self.fn, self.name = fn, name
-        self.max_batch = max_batch or int(os.getenv("MAX_BATCH", "16"))
-        self.max_wait = (max_wait_ms or float(os.getenv("MAX_WAIT_MS", "10"))) / 1000
+    def __init__(self, fn, name="image", max_batch=MAX_BATCH, max_wait_ms=MAX_WAIT_MS):
+        self.fn, self.name, self.max_batch, self.max_wait = fn, name, max_batch, max_wait_ms / 1000
         self.q: asyncio.Queue = asyncio.Queue()
         QUEUE_DEPTH.labels(name).set_function(self.q.qsize)  # read live at scrape time
 
@@ -40,10 +37,8 @@ class Batcher:
             BATCH_SIZE.labels(self.name).observe(len(items))
             try:  # blocking ONNX call runs in a worker thread; the event loop stays free
                 out = await loop.run_in_executor(None, self.fn, np.stack(xs))
-                for f, row in zip(futs, out, strict=True):
-                    if not f.done():  # caller may have disconnected (future cancelled)
-                        f.set_result(row)
             except Exception as e:  # one bad batch must not hang its callers or kill the loop
-                for f in futs:
-                    if not f.done():
-                        f.set_exception(e)
+                out = [e] * len(futs)
+            for f, r in zip(futs, out, strict=True):
+                if not f.done():  # caller may have disconnected (future cancelled)
+                    f.set_exception(r) if isinstance(r, Exception) else f.set_result(r)
