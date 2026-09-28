@@ -2,21 +2,29 @@
 
 import asyncio
 import io
+import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Annotated
 
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from PIL import Image
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, Info, generate_latest
 from pydantic import BaseModel
 
 from app import model
-from app.batcher import Batcher
+from app.batcher import Batcher, jlog
 
 image_batcher = Batcher(model.embed_images, "image")
 state = {"ready": False, "emb": np.zeros((0, 512), np.float32), "names": []}
 index_lock = asyncio.Lock()
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+LATENCY = Histogram("request_latency_seconds", "Request latency", ["endpoint"])
+ERRORS = Counter("errors", "Failed requests", ["endpoint", "type"])  # exported as errors_total
+Gauge("index_size", "Images in the index").set_function(lambda: len(state["names"]))
+Info("model", "Served model").info({"name": "clip-vit-base-patch32", "precision": model.PRECISION})
 
 
 class Indexed(BaseModel):
@@ -53,6 +61,23 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="CLIP-Serve", description=__doc__, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def observe(request: Request, call_next):
+    rid, t0 = request.headers.get("x-request-id") or uuid.uuid4().hex, time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as e:  # unhandled -> 500 upstream; count it, then re-raise
+        ERRORS.labels(request.url.path, type(e).__name__).inc()
+        raise
+    endpoint = getattr(request.scope.get("route"), "path", "unmatched")  # bounded label values
+    LATENCY.labels(endpoint).observe(dt := time.perf_counter() - t0)
+    if response.status_code >= 400:
+        ERRORS.labels(endpoint, str(response.status_code)).inc()
+    response.headers["x-request-id"] = rid
+    jlog(request_id=rid, endpoint=endpoint, status=response.status_code, ms=round(dt * 1e3, 1))
+    return response
 
 
 @app.post("/index", response_model=Indexed)
@@ -102,5 +127,5 @@ def readyz(response: Response):
 
 @app.get("/metrics")
 def metrics():
-    """Prometheus metrics in text format."""
+    """Prometheus metrics (a route, not a mount: avoids the /metrics -> /metrics/ redirect)."""
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
