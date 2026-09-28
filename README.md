@@ -1,9 +1,11 @@
 <div align="center">
 
-# 🔎 CLIP-Serve
+# 🔎 Find Photos by Describing Them
 
-**Search your photos with plain English. A fast, quantised CLIP inference service that runs on a
-laptop CPU.**
+**Type "a red car at night" and get the matching pictures. No tags, no training, and it runs on an
+ordinary laptop.**
+
+<sub><b>CLIP-Serve</b>: a fast, compressed CLIP image-search service</sub>
 
 [![CI](https://github.com/alichr/visual-search-server/actions/workflows/ci.yml/badge.svg)](https://github.com/alichr/visual-search-server/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white)
