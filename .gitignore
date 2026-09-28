@@ -221,3 +221,6 @@ __marimo__/
 models/
 data/
 *.onnx
+
+# Local experiments - not committed
+scratch/
