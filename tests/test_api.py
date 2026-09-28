@@ -12,17 +12,14 @@ from app.main import app  # PRECISION defaults to int8: the fast models, as CI u
 
 
 def png(color: str) -> bytes:
-    buf = io.BytesIO()
-    Image.new("RGB", (64, 64), color).save(buf, "PNG")
+    Image.new("RGB", (64, 64), color).save(buf := io.BytesIO(), "PNG")
     return buf.getvalue()
 
 
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as c:  # `with` runs the lifespan: batcher task + background warm-up
-        deadline = time.monotonic() + 30
-        while c.get("/readyz").status_code != 200 and time.monotonic() < deadline:
-            time.sleep(0.05)
+        any(c.get("/readyz").status_code == 200 or time.sleep(0.05) for _ in range(600))  # <=30 s
         yield c
 
 
@@ -38,5 +35,5 @@ def test_classify_solid_red(client):
 def test_index_two_images_then_search(client):
     files = [("files", (f"{c}.png", png(c))) for c in ("green", "yellow")]
     assert client.post("/index", files=files).json()["index_size"] == 2
-    hits = client.get("/search", params={"q": "a green square"}).json()
-    assert len(hits) == 2 and hits[0]["filename"] == "green.png"
+    hits = client.get("/search", params={"q": "a green square"}).json()  # both, green first
+    assert [h["filename"] for h in hits] == ["green.png", "yellow.png"]

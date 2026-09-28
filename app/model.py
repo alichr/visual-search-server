@@ -45,11 +45,19 @@ def embed_images(batch: np.ndarray) -> np.ndarray:
     return _normalise(image_session.run(None, {"pixel_values": batch})[0])
 
 
+_text_cache: dict[str, np.ndarray] = {}  # labels repeat across /classify calls: embed each once
+
+
 def embed_text(texts: list[str]) -> np.ndarray:
-    """B strings -> (B, 512) L2-normalised float32."""
-    enc = tokenizer.encode_batch(texts)  # NumPy 2 default int is int64, as the ONNX graph expects
-    ids, mask = (np.array([getattr(e, k) for e in enc]) for k in ("ids", "attention_mask"))
-    return _normalise(text_session.run(None, {"input_ids": ids, "attention_mask": mask})[0])
+    """B strings -> (B, 512) L2-normalised float32; only unseen strings reach the model."""
+    if new := [t for t in dict.fromkeys(texts) if t not in _text_cache]:
+        enc = tokenizer.encode_batch(new)  # NumPy 2 default int is int64, as the graph expects
+        ids, mask = (np.array([getattr(e, k) for e in enc]) for k in ("ids", "attention_mask"))
+        emb = _normalise(text_session.run(None, {"input_ids": ids, "attention_mask": mask})[0])
+        if len(_text_cache) > 50_000:  # bound memory (~100 MB) against unique search queries
+            _text_cache.clear()
+        _text_cache.update(zip(new, emb, strict=True))
+    return np.stack([_text_cache[t] for t in texts])
 
 
 def warmup() -> None:

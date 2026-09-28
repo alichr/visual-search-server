@@ -18,7 +18,8 @@ from app import model
 from app.batcher import Batcher, jlog
 
 image_batcher = Batcher(model.embed_images, "image")
-state = {"ready": False, "emb": np.zeros((0, 512), np.float32), "names": []}
+text_batcher = Batcher(lambda texts: model.embed_text(texts.tolist()), "text")  # one run at a time
+state = {"emb": np.zeros((0, 512), np.float32), "names": []}
 index_lock = asyncio.Lock()
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 LATENCY = Histogram("request_latency_seconds", "Request latency", ["endpoint"])
@@ -39,22 +40,17 @@ class Hit(BaseModel):
 
 
 async def embed(f: UploadFile) -> np.ndarray:
-    data = await f.read()
-    try:  # decode + resize off the event loop; PIL's pixel check is the real validation
-        x = await asyncio.to_thread(lambda: model.preprocess(Image.open(io.BytesIO(data))))
+    try:  # open() reads only the header; decode + resize run off the event loop
+        x = await asyncio.to_thread(model.preprocess, Image.open(io.BytesIO(await f.read())))
     except (OSError, Image.DecompressionBombError) as e:
         raise HTTPException(415, f"{f.filename!r} is not a readable image") from e
     return await image_batcher.submit(x)
 
 
-async def warmup() -> None:
-    await asyncio.to_thread(model.warmup)
-    state["ready"] = True
-
-
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    tasks = [asyncio.create_task(image_batcher.run()), asyncio.create_task(warmup())]
+    state["warmup"] = asyncio.create_task(asyncio.to_thread(model.warmup))  # /readyz watches it
+    tasks = [asyncio.create_task(b.run()) for b in (image_batcher, text_batcher)]
     yield
     for t in tasks:
         t.cancel()
@@ -69,13 +65,12 @@ async def observe(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as e:  # unhandled -> 500 upstream; count it, then re-raise
-        ERRORS.labels(request.url.path, type(e).__name__).inc()
+        ERRORS.labels(request.scope["route"].path, type(e).__name__).inc()
         raise
     endpoint = getattr(request.scope.get("route"), "path", "unmatched")  # bounded label values
     LATENCY.labels(endpoint).observe(dt := time.perf_counter() - t0)
     if response.status_code >= 400:
         ERRORS.labels(endpoint, str(response.status_code)).inc()
-    response.headers["x-request-id"] = rid
     jlog(request_id=rid, endpoint=endpoint, status=response.status_code, ms=round(dt * 1e3, 1))
     return response
 
@@ -96,7 +91,7 @@ async def search(q: Annotated[str, Query(min_length=1)], k: Annotated[int, Query
     """Rank indexed images by cosine similarity to a free-text query."""
     if not state["names"]:
         raise HTTPException(409, "Index is empty: POST images to /index first")
-    scores = state["emb"] @ (await asyncio.to_thread(model.embed_text, [q]))[0]
+    scores = state["emb"] @ await text_batcher.submit(q)
     return [Hit(id=i, filename=state["names"][i], score=scores[i]) for i in np.argsort(-scores)[:k]]
 
 
@@ -107,7 +102,7 @@ async def classify(file: Annotated[UploadFile, File()], labels: Annotated[str, F
     if not names:
         raise HTTPException(422, "labels must contain at least one non-empty label")
     img = await embed(file)
-    txt = await asyncio.to_thread(model.embed_text, [f"a photo of a {n}" for n in names])
+    txt = np.stack(await asyncio.gather(*(text_batcher.submit(f"a photo of a {n}") for n in names)))
     p = np.exp(100 * (txt @ img - (txt @ img).max()))  # CLIP logit scale 100, stable softmax
     return dict(sorted(zip(names, (p / p.sum()).tolist(), strict=True), key=lambda kv: -kv[1]))
 
@@ -121,8 +116,9 @@ def healthz():
 @app.get("/readyz")
 def readyz(response: Response):
     """Readiness: models loaded and warm-up done (503 until then)."""
-    response.status_code = 200 if state["ready"] else 503
-    return {"ready": state["ready"]}
+    ready = state["warmup"].done() and state["warmup"].exception() is None  # failed = never ready
+    response.status_code = 200 if ready else 503
+    return {"ready": ready}
 
 
 @app.get("/metrics")
