@@ -1,4 +1,4 @@
-# Prometheus scrape config: docker-compose runs the API as service "app" on port 8000.
+# Prometheus scrape config: docker-compose runs the API as service "clip-serve" on port 8000.
 global:
   scrape_interval: 5s
   evaluation_interval: 5s
@@ -7,4 +7,4 @@ scrape_configs:
   - job_name: clip-serve
     metrics_path: /metrics
     static_configs:
-      - targets: ["app:8000"]
+      - targets: ["clip-serve:8000"]

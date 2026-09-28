@@ -1,1 +1,25 @@
-services: {}
+services:
+  clip-serve:
+    build: .
+    image: clip-serve:latest
+    ports:
+      - "8000:8000"
+    environment:
+      PRECISION: int8
+      ORT_THREADS: "2"
+      MAX_BATCH: "16"
+      MAX_WAIT_MS: "10"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"  # matches ORT_THREADS: predictable latency, no oversubscription
+          memory: 2g
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - clip-serve

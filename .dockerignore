@@ -1,0 +1,10 @@
+# Keep the build context tiny: models are produced inside the image by the exporter stage
+.git
+.venv
+models
+data
+scratch
+**/__pycache__
+.ruff_cache
+.pytest_cache
+*.onnx
